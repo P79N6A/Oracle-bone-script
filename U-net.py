@@ -2,304 +2,423 @@ import tensorflow as tf
 import numpy as np
 
 
+def readData_single(file_queue):
 
-#read data
-def readData_multi():
-	path = "C:/Users/24400/Desktop/train_set_multi.tfrecords"
+	reader = tf.TFRecordReader()
 
-	sess = tf.Session()
+	name,serialized_example = reader.read(file_queue)
 
-	for serialized_example in tf.python_io.tf_record_iterator(path):
+	features = tf.parse_single_example(serialized_example,features = {
+			'label': tf.FixedLenFeature([], tf.string),
+			'img': tf.FixedLenFeature([], tf.string),
+		})
 
-		feature = {}
-		feature['img'] = tf.FixedLenFeature([], tf.string)
-		i=0
-		while i!=15:
-			index = "label_"+str(i)
-			feature[index] = tf.FixedLenFeature([], tf.string)
-			i+=1
-		features = tf.parse_single_example(serialized_example,features = feature)
+	image = tf.decode_raw(features['img'],tf.uint8)
 
-		img = tf.decode_raw(features['img'], tf.uint8)
+	image = tf.reshape(image,[96,96,1])
 
-		img = tf.reshape(img,[96,96,1])
+	label = tf.decode_raw(features['label'],tf.uint8)
 
-		print(img)
+	label = tf.reshape(label,[96*96*1])
 
-def readData_single():
-	path = "C:/Users/24400/Desktop/train_set_single.tfrecords"
+	return image,label
 
-	sess = tf.Session()
+def read_image_batch(file_queue, batch_size):
 
-	for serialized_example in tf.python_io.tf_record_iterator(path):
+	img, label = readData_single(file_queue)
 
-		feature = {}
-		feature['img'] = tf.FixedLenFeature([], tf.string)
-		feature['label'] = tf.FixedLenFeature([], tf.string)
-		features = tf.parse_single_example(serialized_example,features = feature)
+	min_after_dequeue = 2000
 
-		img = tf.decode_raw(features['img'], tf.uint8)
+	capacity = 4000
 
-		img = tf.reshape(img,[96,96,1])
+	image_batch, label_batch = tf.train.shuffle_batch(
+		tensors=[img, label], batch_size=batch_size,
+		capacity=capacity, min_after_dequeue=min_after_dequeue)
 
-		print(img)
+	one_hot_labels = tf.reshape(label_batch, [1, 96, 96])
 
-keep_prob = None
+	return image_batch, one_hot_labels
 
-unPooling = []
+	
 
-config = tf.ConfigProto()
-#config.gpu_options.allow_growth = True
+class Unet:
 
-sess = tf.InteractiveSession(config=config)
+	def __init__(self):
+	
+		self.keep_prob = tf.placeholder(dtype=tf.float32)
 
+		self.lamb = tf.placeholder(dtype = tf.float32)
 
-def weight_variable(shape):
-    initial = tf.truncated_normal(shape,stddev=0.1)    
-    return tf.Variable(initial)
+		self.unPooling = []
 
-def bias_variable(shape):
-    initial = tf.constant(0.1,shape=shape)
-    return tf.Variable(initial)
+		self.input_image = tf.placeholder(dtype = tf.float32,shape = [1,96,96,1])
 
+		self.input_label = tf.placeholder(dtype = tf.int32,shape = [1,96,96])
 
-def conv2d(x,W):
-    return tf.nn.conv2d(x,W,strides=[1,1,1,1],padding = 'SAME')# step is two
+		self.prediction = None
 
-def max_pooling(x):
-    return tf.nn.max_pool(x,ksize=[1,2,2,1],strides=[1,2,2,1],padding='VALID')
+		self.correct_prediction = None
 
-def deconv(x,W,O):
-	return tf.nn.conv2d_transpose(x,W,output_shape = O,strides=[1,2,2,1],padding = 'VALID')
+		self.accurancy = None
 
-def merge(convo_layer,unsampling)
-	return tf.concat(values = [convo_layer,unsampling],axis = -1)
+		self.loss = None
 
+		self.loss_mean = None
 
-x_ = tf.placeholder(tf.float32,[None,96*96])#input
-y_ = tf.placeholder(tf.float32,[None,96*96])#output
+		self.loss_all = None
 
+		self.train_step = None
 
-X = tf.reshape(x_,shape = [-1,96*96*1])
 
-#first convolution 96*96 -->48*48
 
-#---------conv1----------
+	def weight_variable(self,shape):
+	    initial = tf.truncated_normal(shape,stddev=0.1)
+	    tf.add_to_collection(name = 'loss',value=tf.contrib.layers.l2_regularizer(self.lamb)(initial))   
+	    return tf.Variable(initial)
 
-w_conv = weight_variable([4,4,1,32])
-b_conv = bias_variable([32])
+	def bias_variable(self,shape):
+	    initial = tf.random_normal(shape=shape,dtype = tf.float32)
+	    return tf.Variable(initial_value = initial)
 
-img_conv = tf.nn.relu(conv2d(X,w_conv)+b_conv)
 
-X = img_conv
+	def conv2d(self,x,W):
+	    return tf.nn.conv2d(x,W,strides=[1,1,1,1],padding = 'SAME')
 
-# ---------conv2-----------
-w_conv = weight_variable([4,4,32,32])
-b_conv = bias_variable([32])
+	def max_pooling(self,x):
+	    return tf.nn.max_pool(x,ksize=[1,2,2,1],strides=[1,2,2,1],padding='VALID')
 
-img_conv = tf.nn.relu(conv2d(X,w_conv)+b_conv)
+	def deconv(self,x,W,O):
+		return tf.nn.conv2d_transpose(value = x,filter = W,output_shape = O,strides=[1,2,2,1],padding = 'VALID')
 
-X = img_conv
+	def merge_img(self,convo_layer,unsampling):
+		return tf.concat(values = [convo_layer,unsampling],axis = -1)
 
-unPooling.append(X)
+	def setup_network(self):
 
-#---------maxpool--------
 
-img_pool = max_pooling(img_conv)
+		#first convolution 96*96 -->48*48
 
-X = img_pool
+		
+		with tf.name_scope('first_convolution'):
 
-X = tf.nn.dropout(X,keep_prob = keep_prob)
+			#---------conv1----------
 
-#second convolution 48*48 --> 24*24
+			w_conv = self.weight_variable([4,4,1,32])
+			b_conv = self.bias_variable([32])
 
-#---------conv1----------
+			img_conv = tf.nn.relu(self.conv2d(self.input_image,w_conv)+b_conv)
 
-w_conv = weight_variable([4,4,32,64])
-b_conv = bias_variable([64])
+			X = img_conv
 
-img_conv = tf.nn.relu(conv2d(X,w_conv)+b_conv)
+			# ---------conv2-----------
+			w_conv = self.weight_variable([4,4,32,32])
+			b_conv = self.bias_variable([32])
 
-X = img_conv
+			img_conv = tf.nn.relu(self.conv2d(X,w_conv)+b_conv)
 
-# ---------conv2-----------
-w_conv = weight_variable([4,4,64,64])
-b_conv = bias_variable([64])
+			X = img_conv
 
-img_conv = tf.nn.relu(conv2d(X,w_conv)+b_conv)
+			self.unPooling.append(X)
 
-X = img_conv
+			#---------maxpool--------
 
-unPooling.append(X)
+			img_pool = self.max_pooling(img_conv)
 
-#---------maxpool--------
+			X = img_pool
 
-img_pool = max_pooling(img_conv)
+			X = tf.nn.dropout(X,keep_prob =self.keep_prob)
 
-X = img_pool
+		#second convolution 48*48 --> 24*24
 
-X = tf.nn.dropout(X,keep_prob = keep_prob)
+		with tf.name_scope('second_convolution'):
 
+			#---------conv1----------
 
-#third convolution 24*24 -->12*12 
+			w_conv = self.weight_variable([4,4,32,64])
+			b_conv = self.bias_variable([64])
 
-#---------conv1----------
+			img_conv = tf.nn.relu(self.conv2d(X,w_conv)+b_conv)
 
-w_conv = weight_variable([4,4,64,128])
-b_conv = bias_variable([128])
+			X = img_conv
 
-img_conv = tf.nn.relu(conv2d(X,w_conv)+b_conv)
+			# ---------conv2-----------
+			w_conv = self.weight_variable([4,4,64,64])
+			b_conv = self.bias_variable([64])
 
-X = img_conv
+			img_conv = tf.nn.relu(self.conv2d(X,w_conv)+b_conv)
 
-# ---------conv2-----------
-w_conv = weight_variable([4,4,128,128])
-b_conv = bias_variable([128])
+			X = img_conv
 
-img_conv = tf.nn.relu(conv2d(X,w_conv)+b_conv)
+			self.unPooling.append(X)
 
-X = img_conv
+			#---------maxpool--------
 
-unPooling.append(X)
+			img_pool = self.max_pooling(img_conv)
 
-#---------maxpool--------
+			X = img_pool
 
-img_pool = max_pooling(img_conv)
+			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
 
-X = img_pool
 
-X = tf.nn.dropout(X,keep_prob = keep_prob)
+		#third convolution 24*24 -->12*12 
 
+		with tf.name_scope('third_convolution'):
 
-#bottom convolution 
+			#---------conv1----------
 
-#---------conv1----------
+			w_conv = self.weight_variable([4,4,64,128])
+			b_conv = self.bias_variable([128])
 
-w_conv = weight_variable([3,3,128,256])
-b_conv = bias_variable([256])
+			img_conv = tf.nn.relu(self.conv2d(X,w_conv)+b_conv)
 
-img_conv = tf.nn.relu(conv2d(X,w_conv)+b_conv)
+			X = img_conv
 
-X = img_conv
+			# ---------conv2-----------
+			w_conv = self.weight_variable([4,4,128,128])
+			b_conv = self.bias_variable([128])
 
-# ---------conv2-----------
-w_conv = weight_variable([3,3,256,256])
-b_conv = bias_variable([256])
+			img_conv = tf.nn.relu(self.conv2d(X,w_conv)+b_conv)
 
-img_conv = tf.nn.relu(conv2d(X,w_conv)+b_conv)
+			X = img_conv
 
-X = img_conv
+			self.unPooling.append(X)
 
-#---------usample--------
-w_conv = weight_variable([2,2,128,256])
-b_conv = bias_variable([256])
+			#---------maxpool--------
 
-img_deconv = deconv(img_conv,w_conv,[1,24,24,128])
+			img_pool = self.max_pooling(img_conv)
 
-X = img_deconv
+			X = img_pool
 
-img_deconv = tf.nn.relu(tf.nn.bias_add(X,b_conv))
+			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
 
-X = img_deconv
 
-X = tf.nn.dropout(X,keep_prob = keep_prob)
+		#bottom convolution 
 
-#---------upsample1----------------
+		with tf.name_scope('bottom_convolution'):
 
+			#---------conv1----------
 
-X = merge(unPooling[2],X)
+			w_conv = self.weight_variable([3,3,128,256])
+			b_conv = self.bias_variable([256])
 
-w_conv = weight_variable([4,4,128,64])
-b_conv = bias_variable([64])
+			img_conv = tf.nn.relu(self.conv2d(X,w_conv)+b_conv)
 
-img_deconv = tf.nn.relu(conv2d(X,w_conv)+b_conv)
+			X = img_conv
 
-X = img_deconv
+			# ---------conv2-----------
+			w_conv = self.weight_variable([3,3,256,256])
+			b_conv = self.bias_variable([256])
 
-w_conv = weight_variable([4,4,64,64])
-b_conv = bias_variable([64])
+			img_conv = tf.nn.relu(self.conv2d(X,w_conv)+b_conv)
 
-img_deconv = tf.nn relu(conv2d(X,w_conv)+b_conv)
+			X = img_conv
 
-X = img_deconv
+			#---------usample--------
+			w_conv = self.weight_variable([2,2,128,256])
+			b_conv = self.bias_variable([128])
 
-w_conv = weight_variable([2,2,64,128])
-b_conv = bias_variable([64])
 
-img_deconv = deconv(img_deconv,w_conv,[1,48,48,64])
+			img_deconv = tf.nn.relu(self.deconv(img_conv,w_conv,[1,24,24,128])+b_conv)
+			X = img_deconv
 
-img_deconv = tf.nn.relu(tf.nn.bias_add(X,b_conv))
 
-X = img_deconv
+			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
 
-X = tf.nn.dropout(X,keep_prob = keep_prob)
+		with tf.name_scope('first_deconvolution'):
 
-# ----------unsample2-------------------
 
-X = merge(unPooling[1],X)
+			#first deconvolution
 
-w_conv = weight_variable([4,4,64,32])
-b_conv = bias_variable([32])
+			X = self.merge_img(self.unPooling[2],X)
 
-img_deconv = tf.nn.relu(conv2d(X,w_conv)+b_conv)
+			w_conv = self.weight_variable([4,4,256,128])
+			b_conv = self.bias_variable([128])
 
-X = img_deconv
+			img_deconv = tf.nn.relu(self.conv2d(X,w_conv)+b_conv)
 
-w_conv = weight_variable([4,4,32,32])
-b_conv = bias_variable([32])
+			X = img_deconv
 
-img_deconv = tf.nn relu(conv2d(X,w_conv)+b_conv)
+			w_conv = self.weight_variable([4,4,128,128])
+			b_conv = self.bias_variable([128])
 
-X = img_deconv
+			img_deconv = tf.nn.relu(self.conv2d(X,w_conv)+b_conv)
 
-w_conv = weight_variable([2,2,32,64])
-b_conv = bias_variable([32])
+			X = img_deconv
 
-img_deconv = deconv(img_deconv,w_conv,[1,96,96,32])
+			w_conv = self.weight_variable([2,2,64,128])
+			b_conv = self.bias_variable([64])
 
-img_deconv = tf.nn.relu(tf.nn.bias_add(X,b_conv))
 
-X = img_deconv
+			img_deconv = tf.nn.relu(self.deconv(img_deconv,w_conv,[1,48,48,64])+b_conv)
 
-X = tf.nn.dropout(X,keep_prob = keep_prob)
 
+			X = img_deconv
 
-#-----------------final layer--------------
-X = merge(unPooling[1],X)
+			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
 
-w_conv = weight_variable([4,4,64,32])
-b_conv = bias_variable([32])
+		with tf.name_scope('second_deconvolution'):
 
-img_deconv = tf.nn.relu(conv2d(X,w_conv)+b_conv)
+			# second deconvolution
 
-X = img_deconv
+			X = self.merge_img(self.unPooling[1],X)
 
-w_conv = weight_variable([4,4,32,32])
-b_conv = bias_variable([32])
+			w_conv = self.weight_variable([4,4,128,64])
+			b_conv = self.bias_variable([64])
 
-img_deconv = tf.nn relu(conv2d(X,w_conv)+b_conv)
+			img_deconv = tf.nn.relu(self.conv2d(X,w_conv)+b_conv)
 
-X = img_deconv
+			X = img_deconv
 
-w_conv = weight_variable([1,1,32,2])
-b_conv = bias_variable([2])
+			w_conv = self.weight_variable([4,4,64,64])
+			b_conv = self.bias_variable([64])
 
-img_deconv = tf.nn relu(conv2d(X,w_conv)+b_conv)
+			img_deconv = tf.nn.relu(self.conv2d(X,w_conv)+b_conv)
 
-X = img_deconv
+			X = img_deconv
 
-#softmax loss
+			w_conv = self.weight_variable([2,2,32,64])
+			b_conv = self.bias_variable([32])
 
-def loss():
-	return tf.nn.sparse_softmax_cross_entropy_with_logits(labels = ,logits = )
 
-def loss_mean():
-	return tf.reduce_mean(loss())
+			img_deconv = tf.nn.relu(self.deconv(img_deconv,w_conv,[1,96,96,32])+b_conv)
 
-def loss_all() = tf.add_n(inputs = tf.get_collection(key= 'loss'))
 
+			X = img_deconv
 
+			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
 
+		with tf.name_scope('final_layer'):
 
+			#final layer
 
+			X = self.merge_img(self.unPooling[0],X)
 
+			w_conv = self.weight_variable([4,4,64,32])
+			b_conv = self.bias_variable([32])
+
+			img_deconv = tf.nn.relu(self.conv2d(X,w_conv)+b_conv)
+
+			X = img_deconv
+
+			w_conv = self.weight_variable([4,4,32,32])
+			b_conv = self.bias_variable([32])
+
+			img_deconv = tf.nn.relu(self.conv2d(X,w_conv)+b_conv)
+
+			X = img_deconv
+
+			w_conv = self.weight_variable([1,1,32,2])
+			b_conv = self.bias_variable([2])
+
+			img_deconv = tf.nn.conv2d(input = X,filter = w_conv,strides = [1,1,1,1],padding = 'VALID')
+
+			self.prediction = tf.nn.bias_add(img_deconv,b_conv)
+
+
+		#softmax loss
+
+		with tf.name_scope('softmax'):
+
+
+			self.loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels = self.input_label,logits = self.prediction, name = 'loss')
+
+			self.loss_mean = tf.reduce_mean(self.loss)
+
+			tf.add_to_collection(name = 'loss',value=self.loss_mean)
+
+			self.loss_all = tf.add_n(inputs = tf.get_collection(key= 'loss'))
+
+		with tf.name_scope('accurancy'):
+
+
+			self.correct_prediction = tf.equal(tf.argmax(input=self.prediction, axis=3, output_type=tf.int32), self.input_label)
+
+			self.correct_prediction = tf.cast(self.correct_prediction,tf.float32)
+
+			self.accurancy = tf.reduce_mean(self.correct_prediction)
+
+		with tf.name_scope('Gradient_Descent'):
+
+			self.train_step = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(self.loss_all)
+
+	def train(self):
+
+		train_file_path = "C:/Users/24400/Desktop/train_set_single_simple.tfrecords"
+
+		train_image_filename_queue = tf.train.string_input_producer(string_tensor = tf.train.match_filenames_once(train_file_path),num_epochs = 1,shuffle = True)
+		
+		ckpt_path = "C:/Users/24400/Desktop/ckpt/model.ckpt"
+		
+		train_images,train_labels = read_image_batch(train_image_filename_queue,1)
+
+
+		tf.summary.scalar("loss", self.loss_mean)
+		
+		tf.summary.scalar('accuracy', self.accurancy)
+		
+		merged_summary = tf.summary.merge_all()
+
+		model_dir = "C:/Users/24400/Desktop/model"
+
+		tb_dir = "C:/Users/24400/Desktop/logs"
+
+		all_parameters_saver = tf.train.Saver()
+
+		with tf.Session() as sess:
+
+			sess.run(tf.global_variables_initializer())
+			
+			sess.run(tf.local_variables_initializer())
+			
+			summary_writer = tf.summary.FileWriter(tb_dir, sess.graph)
+			
+			tf.summary.FileWriter(model_dir, sess.graph)
+			
+			coord = tf.train.Coordinator()
+			
+			threads = tf.train.start_queue_runners(coord = coord)
+
+			try:
+
+				epoch = 1
+
+				while not coord.should_stop():
+
+					example,label = sess.run([train_images,train_labels])
+
+					lo,acc,summary = sess.run([self.loss_mean,self.accurancy,merged_summary],feed_dict = {
+							self.input_image:example,self.input_label:label,self.keep_prob:1.0,self.lamb:0.004
+						})
+
+					summary_writer.add_summary(summary, epoch)
+
+					sess.run([self.train_step],feed_dict={
+							self.input_image: example, self.input_label: label, self.keep_prob: 0.6,
+							self.lamb: 0.004
+						})
+
+					epoch+=1
+
+					if epoch%10 == 0:
+
+						print('num %d, loss: %.6f and accuracy: %.6f' % (epoch, lo, acc))
+
+
+			except tf.errors.OutOfRangeError:
+				print('Done training -- epoch limit reached')	
+
+
+			finally:
+				all_parameters_saver.save(sess = sess,save_path = ckpt_path)
+				coord.request_stop()
+
+			coord.join(threads)
+
+			print("done training")
+
+def main():
+	unet = Unet()
+	unet.setup_network()
+	unet.train()
+
+main()
