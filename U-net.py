@@ -1,16 +1,71 @@
 import tensorflow as tf
 import numpy as np
+import cv2
+from PIL import Image as Ige
+
+def convertToBinary(img):
+	axis = []
+	for x in img:
+		element = []	
+		for y in x:
+			if y[0]!=255:
+				element.append(1)
+			else:
+				element.append(0)
+		element = np.array(element,dtype = 'uint8')
+		axis.append(element)
+	axis = np.array(axis)
+	return axis
 
 
-def readData_single(file_queue):
+def transfer(axis):
+	i = 1
+	while i!=95:
+		j=1
+		while j!=95:
+			if axis[i][j] == 1:
+				if axis[i][j+1] == 0 and axis[i][j-1] == 0:
+					axis[i][j] = 0
+				if axis[i+1][j] == 0 and axis[i-1][j] == 0:
+					axis[i][j] = 0
+			j+=1
+		i+=1
+	return axis
+
+def binaryToImg(bin):
+	axis = []
+	for xAxis in bin:
+		element = []
+		for yAxis in xAxis:
+			temp = []
+			if yAxis == 1:
+				temp.append(0)
+				temp.append(0)
+				temp.append(0)
+			else:
+				temp.append(255)
+				temp.append(255)
+				temp.append(255)
+			temp = np.array(temp,dtype = 'uint8')
+			element.append(temp)
+		element = np.array(element)
+		axis.append(element)
+
+	axis = np.array(axis)
+	return axis
+
+def readData_single():
+	path = "C:/Users/24400/Desktop/train_set_simple.tfrecords"
+
+	filename_queue = tf.train.string_input_producer([path],num_epochs = 1,shuffle = True)
 
 	reader = tf.TFRecordReader()
 
-	name,serialized_example = reader.read(file_queue)
+	_,serialized_example = reader.read(filename_queue)
 
 	features = tf.parse_single_example(serialized_example,features = {
-			'label': tf.FixedLenFeature([], tf.string),
 			'img': tf.FixedLenFeature([], tf.string),
+			'label': tf.FixedLenFeature([], tf.string)
 		})
 
 	image = tf.decode_raw(features['img'],tf.uint8)
@@ -19,26 +74,9 @@ def readData_single(file_queue):
 
 	label = tf.decode_raw(features['label'],tf.uint8)
 
-	label = tf.reshape(label,[96*96*1])
+	label = tf.reshape(label,[96,96])
 
 	return image,label
-
-def read_image_batch(file_queue, batch_size):
-
-	img, label = readData_single(file_queue)
-
-	min_after_dequeue = 2000
-
-	capacity = 4000
-
-	image_batch, label_batch = tf.train.shuffle_batch(
-		tensors=[img, label], batch_size=batch_size,
-		capacity=capacity, min_after_dequeue=min_after_dequeue)
-
-	one_hot_labels = tf.reshape(label_batch, [1, 96, 96])
-
-	return image_batch, one_hot_labels
-
 	
 
 class Unet:
@@ -224,6 +262,35 @@ class Unet:
 
 			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
 
+		'''
+		with tf.name_scope('hidden_layer_1'):
+			#-----------reshape--------
+			X = tf.reshape(X,[-1,24*24*128])
+
+			w_conv = self.weight_variable([24*24*128,1024*10])
+			b_conv = self.bias_variable([1024*10])
+
+			X = tf.nn.relu(tf.matmul(X,w_conv)+b_conv)
+
+			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
+
+
+		with tf.name_scope("hidden_layer_2"):
+
+			#-----------reshape----------
+			X = tf.reshape(X,[-1,1024*10])
+
+			w_conv = self.weight_variable([1024*10,24*24*128])
+			b_conv = self.bias_variable([24*24*128])
+
+			X  = tf.nn.relu(tf.matmul(X,w_conv)+b_conv)
+
+			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
+
+			X = tf.reshape(X,[1,24,24,128])
+
+		'''
+
 		with tf.name_scope('first_deconvolution'):
 
 
@@ -319,7 +386,6 @@ class Unet:
 
 		with tf.name_scope('softmax'):
 
-
 			self.loss = tf.nn.sparse_softmax_cross_entropy_with_logits(labels = self.input_label,logits = self.prediction, name = 'loss')
 
 			self.loss_mean = tf.reduce_mean(self.loss)
@@ -328,8 +394,9 @@ class Unet:
 
 			self.loss_all = tf.add_n(inputs = tf.get_collection(key= 'loss'))
 
-		with tf.name_scope('accurancy'):
 
+
+		with tf.name_scope('accurancy'):
 
 			self.correct_prediction = tf.equal(tf.argmax(input=self.prediction, axis=3, output_type=tf.int32), self.input_label)
 
@@ -337,39 +404,41 @@ class Unet:
 
 			self.accurancy = tf.reduce_mean(self.correct_prediction)
 
-		with tf.name_scope('Gradient_Descent'):
+		with tf.name_scope('gradient_descent'):
 
 			self.train_step = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(self.loss_all)
 
+
+
 	def train(self):
 
-		train_file_path = "C:/Users/24400/Desktop/train_set_single_simple.tfrecords"
-
-		train_image_filename_queue = tf.train.string_input_producer(string_tensor = tf.train.match_filenames_once(train_file_path),num_epochs = 1,shuffle = True)
-		
 		ckpt_path = "C:/Users/24400/Desktop/ckpt/model.ckpt"
 		
-		train_images,train_labels = read_image_batch(train_image_filename_queue,1)
-
-
 		tf.summary.scalar("loss", self.loss_mean)
 		
 		tf.summary.scalar('accuracy', self.accurancy)
 		
 		merged_summary = tf.summary.merge_all()
 
-		model_dir = "C:/Users/24400/Desktop/model"
 
-		tb_dir = "C:/Users/24400/Desktop/logs"
+		model_dir = "C:/Users/24400/Desktop/data/model"
+
+		tb_dir = "C:/Users/24400/Desktop/data/logs"
 
 		all_parameters_saver = tf.train.Saver()
 
+
 		with tf.Session() as sess:
+
+			image,label = readData_single()
+
+			image_batch,label_batch = tf.train.shuffle_batch([image,label],batch_size = 1,num_threads = 4,capacity = 1012,min_after_dequeue = 1000)
+
 
 			sess.run(tf.global_variables_initializer())
 			
 			sess.run(tf.local_variables_initializer())
-			
+
 			summary_writer = tf.summary.FileWriter(tb_dir, sess.graph)
 			
 			tf.summary.FileWriter(model_dir, sess.graph)
@@ -382,12 +451,14 @@ class Unet:
 
 				epoch = 1
 
-				while not coord.should_stop():
+				while not coord.should_stop() or epoch == 100000:
 
-					example,label = sess.run([train_images,train_labels])
+
+					example,label = sess.run([image_batch,label_batch])
+
 
 					lo,acc,summary = sess.run([self.loss_mean,self.accurancy,merged_summary],feed_dict = {
-							self.input_image:example,self.input_label:label,self.keep_prob:1.0,self.lamb:0.004
+							self.input_image:example,self.input_label:label,self.keep_prob:0.6,self.lamb:0.004
 						})
 
 					summary_writer.add_summary(summary, epoch)
@@ -399,8 +470,8 @@ class Unet:
 
 					epoch+=1
 
-					if epoch%10 == 0:
 
+					if epoch%10 == 0:
 						print('num %d, loss: %.6f and accuracy: %.6f' % (epoch, lo, acc))
 
 
@@ -416,9 +487,50 @@ class Unet:
 
 			print("done training")
 
+	def estimate(self):
+		imgPath = "C:/Users/24400/Desktop/J19538.jpg"
+
+		img = cv2.imdecode(np.fromfile(imgPath,dtype=np.uint8),-1)
+		img = cv2.resize(src = img,dsize=(96,96))
+
+		img = convertToBinary(img)
+		img = transfer(img)
+		data = img
+
+		data = np.reshape(a=data, newshape=(1, 96, 96,1))
+
+		ckpt_path = "C:/Users/24400/Desktop/ckpt/model.ckpt"
+
+		all_parameters_saver = tf.train.Saver()
+		with tf.Session() as sess:  
+			sess.run(tf.global_variables_initializer())
+			sess.run(tf.local_variables_initializer())
+			all_parameters_saver.restore(sess=sess, save_path=ckpt_path)
+			predict_image = sess.run(
+							tf.argmax(input=self.prediction, axis=3), 
+							feed_dict={
+								self.input_image: data,
+								self.keep_prob: 0.6, self.lamb: 0.004
+							}
+						)
+			
+			predict_image = predict_image[0]
+			print(predict_image[0][0])
+			'''
+			predict_image = binaryToImg(predict_image)
+			predict_image = Ige.fromarray(predict_image,'RGB')
+			predict_image.save('predict_image.jpg')
+			predict_image.show() 
+			'''
+			
+		print('Done prediction')
+
+			
+
 def main():
+	#check_data()
 	unet = Unet()
 	unet.setup_network()
-	unet.train()
+	unet.estimate()
 
 main()
