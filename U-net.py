@@ -230,6 +230,33 @@ class Unet:
 			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
 
 
+		with tf.name_scope('hidden_layer_1'):
+			#-----------reshape--------
+			X = tf.reshape(X,[-1,12*12*128])
+
+			w_conv = self.weight_variable([12*12*128,1024*10])
+			b_conv = self.bias_variable([1024*10])
+
+			X = tf.nn.relu(tf.matmul(X,w_conv)+b_conv)
+
+			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
+
+
+		with tf.name_scope("hidden_layer_2"):
+
+			#-----------reshape----------
+			X = tf.reshape(X,[-1,1024*10])
+
+			w_conv = self.weight_variable([1024*10,12*12*128])
+			b_conv = self.bias_variable([12*12*128])
+
+			X  = tf.nn.relu(tf.matmul(X,w_conv)+b_conv)
+
+			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
+
+			X = tf.reshape(X,[1,12,12,128])
+
+
 		#bottom convolution 
 
 		with tf.name_scope('bottom_convolution'):
@@ -262,34 +289,7 @@ class Unet:
 
 			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
 
-		'''
-		with tf.name_scope('hidden_layer_1'):
-			#-----------reshape--------
-			X = tf.reshape(X,[-1,24*24*128])
-
-			w_conv = self.weight_variable([24*24*128,1024*10])
-			b_conv = self.bias_variable([1024*10])
-
-			X = tf.nn.relu(tf.matmul(X,w_conv)+b_conv)
-
-			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
-
-
-		with tf.name_scope("hidden_layer_2"):
-
-			#-----------reshape----------
-			X = tf.reshape(X,[-1,1024*10])
-
-			w_conv = self.weight_variable([1024*10,24*24*128])
-			b_conv = self.bias_variable([24*24*128])
-
-			X  = tf.nn.relu(tf.matmul(X,w_conv)+b_conv)
-
-			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
-
-			X = tf.reshape(X,[1,24,24,128])
-
-		'''
+		
 
 		with tf.name_scope('first_deconvolution'):
 
@@ -458,13 +458,13 @@ class Unet:
 
 
 					lo,acc,summary = sess.run([self.loss_mean,self.accurancy,merged_summary],feed_dict = {
-							self.input_image:example,self.input_label:label,self.keep_prob:0.6,self.lamb:0.004
+							self.input_image:example,self.input_label:label,self.keep_prob:0.1,self.lamb:0.004
 						})
 
 					summary_writer.add_summary(summary, epoch)
 
 					sess.run([self.train_step],feed_dict={
-							self.input_image: example, self.input_label: label, self.keep_prob: 0.6,
+							self.input_image: example, self.input_label: label, self.keep_prob: 0.1,
 							self.lamb: 0.004
 						})
 
@@ -510,27 +510,27 @@ class Unet:
 							tf.argmax(input=self.prediction, axis=3), 
 							feed_dict={
 								self.input_image: data,
-								self.keep_prob: 0.6, self.lamb: 0.004
+								self.keep_prob: 0.1, self.lamb: 0.004
 							}
 						)
 			
 			predict_image = predict_image[0]
 			print(predict_image[0][0])
-			'''
+			
 			predict_image = binaryToImg(predict_image)
 			predict_image = Ige.fromarray(predict_image,'RGB')
 			predict_image.save('predict_image.jpg')
 			predict_image.show() 
-			'''
+			
 			
 		print('Done prediction')
 
 			
 
 def main():
-	#check_data()
 	unet = Unet()
 	unet.setup_network()
-	unet.estimate()
+	unet.train()
+	#unet.estimate()
 
 main()
