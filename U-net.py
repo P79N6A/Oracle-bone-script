@@ -8,28 +8,13 @@ def convertToBinary(img):
 	for x in img:
 		element = []	
 		for y in x:
-			if y[0]!=255:
+			if y[0]<150:
 				element.append(1)
 			else:
 				element.append(0)
 		element = np.array(element,dtype = 'uint8')
 		axis.append(element)
 	axis = np.array(axis)
-	return axis
-
-
-def transfer(axis):
-	i = 1
-	while i!=95:
-		j=1
-		while j!=95:
-			if axis[i][j] == 1:
-				if axis[i][j+1] == 0 and axis[i][j-1] == 0:
-					axis[i][j] = 0
-				if axis[i+1][j] == 0 and axis[i-1][j] == 0:
-					axis[i][j] = 0
-			j+=1
-		i+=1
 	return axis
 
 def binaryToImg(bin):
@@ -55,7 +40,7 @@ def binaryToImg(bin):
 	return axis
 
 def readData_single():
-	path = "C:/Users/24400/Desktop/train_set_simple.tfrecords"
+	path = "C:/Users/24400/Desktop/train_set_Unet.tfrecords"
 
 	filename_queue = tf.train.string_input_producer([path],num_epochs = 1,shuffle = True)
 
@@ -110,7 +95,7 @@ class Unet:
 
 
 	def weight_variable(self,shape):
-	    initial = tf.truncated_normal(shape,stddev=0.1)
+	    initial = tf.truncated_normal(shape,stddev=0.015)
 	    tf.add_to_collection(name = 'loss',value=tf.contrib.layers.l2_regularizer(self.lamb)(initial))   
 	    return tf.Variable(initial)
 
@@ -164,7 +149,6 @@ class Unet:
 
 			X = img_pool
 
-			X = tf.nn.dropout(X,keep_prob =self.keep_prob)
 
 		#second convolution 48*48 --> 24*24
 
@@ -195,7 +179,6 @@ class Unet:
 
 			X = img_pool
 
-			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
 
 
 		#third convolution 24*24 -->12*12 
@@ -230,35 +213,9 @@ class Unet:
 			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
 
 
-		with tf.name_scope('hidden_layer_1'):
-			#-----------reshape--------
-			X = tf.reshape(X,[-1,12*12*128])
-
-			w_conv = self.weight_variable([12*12*128,1024*10])
-			b_conv = self.bias_variable([1024*10])
-
-			X = tf.nn.relu(tf.matmul(X,w_conv)+b_conv)
-
-			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
-
-
-		with tf.name_scope("hidden_layer_2"):
-
-			#-----------reshape----------
-			X = tf.reshape(X,[-1,1024*10])
-
-			w_conv = self.weight_variable([1024*10,12*12*128])
-			b_conv = self.bias_variable([12*12*128])
-
-			X  = tf.nn.relu(tf.matmul(X,w_conv)+b_conv)
-
-			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
-
-			X = tf.reshape(X,[1,12,12,128])
-
-
 		#bottom convolution 
 
+		
 		with tf.name_scope('bottom_convolution'):
 
 			#---------conv1----------
@@ -287,9 +244,6 @@ class Unet:
 			X = img_deconv
 
 
-			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
-
-		
 
 		with tf.name_scope('first_deconvolution'):
 
@@ -321,7 +275,6 @@ class Unet:
 
 			X = img_deconv
 
-			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
 
 		with tf.name_scope('second_deconvolution'):
 
@@ -353,6 +306,7 @@ class Unet:
 			X = img_deconv
 
 			X = tf.nn.dropout(X,keep_prob = self.keep_prob)
+
 
 		with tf.name_scope('final_layer'):
 
@@ -406,7 +360,7 @@ class Unet:
 
 		with tf.name_scope('gradient_descent'):
 
-			self.train_step = tf.train.AdamOptimizer(learning_rate=1e-4).minimize(self.loss_all)
+			self.train_step = tf.train.AdamOptimizer(learning_rate=0.0001).minimize(self.loss_all)
 
 
 
@@ -451,20 +405,20 @@ class Unet:
 
 				epoch = 1
 
-				while not coord.should_stop() or epoch == 100000:
+				while not coord.should_stop():
 
 
 					example,label = sess.run([image_batch,label_batch])
 
 
 					lo,acc,summary = sess.run([self.loss_mean,self.accurancy,merged_summary],feed_dict = {
-							self.input_image:example,self.input_label:label,self.keep_prob:0.1,self.lamb:0.004
+							self.input_image:example,self.input_label:label,self.keep_prob:0.7,self.lamb:0.004
 						})
 
 					summary_writer.add_summary(summary, epoch)
 
 					sess.run([self.train_step],feed_dict={
-							self.input_image: example, self.input_label: label, self.keep_prob: 0.1,
+							self.input_image: example, self.input_label: label, self.keep_prob: 1.0,
 							self.lamb: 0.004
 						})
 
@@ -488,13 +442,12 @@ class Unet:
 			print("done training")
 
 	def estimate(self):
-		imgPath = "C:/Users/24400/Desktop/J19538.jpg"
+		imgPath = "C:/Users/24400/Desktop/J07022.jpg"
 
 		img = cv2.imdecode(np.fromfile(imgPath,dtype=np.uint8),-1)
 		img = cv2.resize(src = img,dsize=(96,96))
-
 		img = convertToBinary(img)
-		img = transfer(img)
+
 		data = img
 
 		data = np.reshape(a=data, newshape=(1, 96, 96,1))
@@ -510,12 +463,11 @@ class Unet:
 							tf.argmax(input=self.prediction, axis=3), 
 							feed_dict={
 								self.input_image: data,
-								self.keep_prob: 0.1, self.lamb: 0.004
+								self.keep_prob: 1.0, self.lamb: 0.004
 							}
 						)
 			
 			predict_image = predict_image[0]
-			print(predict_image[0][0])
 			
 			predict_image = binaryToImg(predict_image)
 			predict_image = Ige.fromarray(predict_image,'RGB')
@@ -525,12 +477,10 @@ class Unet:
 			
 		print('Done prediction')
 
-			
-
 def main():
 	unet = Unet()
 	unet.setup_network()
-	unet.train()
-	#unet.estimate()
+	#unet.train()
+	unet.estimate()
 
 main()
